@@ -1,0 +1,97 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>FW — Find Work</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Archivo+Black&family=Space+Grotesk:wght@400;500;700&family=Space+Mono:wght@400;700&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+ 
+<header class="masthead">
+  <div class="masthead-inner">
+    <div class="wordmark">
+      <span class="fw">FW</span>
+      <span class="find-work">Find Work</span>
+    </div>
+  </div>
+  <p class="tagline">Real listings, real filters. No noise.</p>
+</header>
+ 
+<main>
+  <section class="search-panel">
+    <form id="search-form">
+      <div class="field-row">
+        <div class="field">
+          <label for="keyword">Role or keyword</label>
+          <input type="text" id="keyword" name="keyword" placeholder="e.g. software engineer" required>
+        </div>
+        <div class="field">
+          <label for="location">Location</label>
+          <input type="text" id="location" name="location" placeholder="e.g. London">
+        </div>
+        <div class="field field-small">
+          <label for="country">Country</label>
+          <select id="country" name="country">
+            <option value="gb">United Kingdom</option>
+            <option value="us">United States</option>
+            <option value="ca">Canada</option>
+            <option value="au">Australia</option>
+            <option value="de">Germany</option>
+            <option value="fr">France</option>
+            <option value="za">South Africa</option>
+          </select>
+        </div>
+        <button type="submit" class="btn-search">Search</button>
+      </div>
+    </form>
+ 
+    <div class="filter-row" id="filter-row" hidden>
+      <div class="field field-small">
+        <label for="sort">Sort</label>
+        <select id="sort">
+          <option value="relevance">Most relevant</option>
+          <option value="date">Newest first</option>
+          <option value="salary_high">Highest salary</option>
+          <option value="salary_low">Lowest salary</option>
+        </select>
+      </div>
+      <div class="field field-small">
+        <label for="min-salary">Minimum salary</label>
+        <input type="number" id="min-salary" placeholder="e.g. 30000" min="0" step="1000">
+      </div>
+      <div class="field field-grow">
+        <label for="category">Category</label>
+        <select id="category">
+          <option value="">All categories</option>
+        </select>
+      </div>
+    </div>
+  </section>
+ 
+  <section class="status-line" id="status-line" aria-live="polite"></section>
+ 
+  <section class="results" id="results"></section>
+</main>
+ 
+<template id="job-card-template">
+  <article class="job-card">
+    <div class="job-card-top">
+      <h2 class="job-title"></h2>
+      <span class="job-salary"></span>
+    </div>
+    <p class="job-company"></p>
+    <p class="job-location"></p>
+    <p class="job-excerpt"></p>
+    <div class="job-card-bottom">
+      <span class="job-date"></span>
+      <a class="job-link" target="_blank" rel="noopener">View listing</a>
+    </div>
+  </article>
+</template>
+ 
+<script src="script.js"></script>
+</body>
+</html>
