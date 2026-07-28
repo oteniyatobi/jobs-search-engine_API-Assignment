@@ -1,0 +1,124 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Jobs</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+<header class="topbar">
+  <div class="topbar-inner">
+    <a class="brand" href="/">
+      <span class="brand-name">Jobs<span class="brand-dot">.</span></span>
+    </a>
+    <form id="search-form" class="topbar-search">
+      <div class="search-fields">
+        <div class="search-field">
+          <svg class="search-icon" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="8"/><path d="m21 21-4.35-4.35"/></svg>
+          <input type="text" id="keyword" name="keyword" placeholder="Job title, keywords" required>
+        </div>
+        <div class="search-field">
+          <svg class="search-icon" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 10c0 7-9 13-9 13s-9-6-9-13a9 9 0 0 1 18 0z"/><circle cx="12" cy="10" r="3"/></svg>
+          <input type="text" id="location" name="location" placeholder="City, region">
+        </div>
+        <select id="country" name="country" class="search-country">
+          <option value="gb">United Kingdom</option>
+          <option value="us">United States</option>
+          <option value="ca">Canada</option>
+          <option value="au">Australia</option>
+          <option value="de">Germany</option>
+          <option value="fr">France</option>
+          <option value="za">South Africa</option>
+        </select>
+        <button type="submit" class="btn-search">Search</button>
+      </div>
+    </form>
+  </div>
+</header>
+
+<div class="page">
+
+  <aside class="sidebar">
+    <div class="sidebar-inner" id="sidebar-inner" hidden>
+      <div class="filter-group">
+        <h3 class="filter-heading">Sort by</h3>
+        <select id="sort" class="filter-select">
+          <option value="relevance">Most relevant</option>
+          <option value="date">Newest first</option>
+          <option value="salary_high">Highest salary</option>
+          <option value="salary_low">Lowest salary</option>
+        </select>
+      </div>
+      <div class="filter-group">
+        <h3 class="filter-heading">Minimum salary</h3>
+        <input type="number" id="min-salary" class="filter-input" placeholder="30000" min="0" step="1000">
+      </div>
+      <div class="filter-group">
+        <h3 class="filter-heading">Category</h3>
+        <select id="category" class="filter-select">
+          <option value="">All categories</option>
+        </select>
+      </div>
+    </div>
+    <div class="sidebar-hint" id="sidebar-hint">
+      <p>Run a search to see filters.</p>
+    </div>
+  </aside>
+
+  <main class="results-area">
+    <div class="results-header" id="results-header" hidden>
+      <p class="results-count" id="results-count"></p>
+    </div>
+    <p class="status" id="status-line" aria-live="polite">Search a role and location above to see listings.</p>
+    <div class="results" id="results"></div>
+  </main>
+
+</div>
+
+<footer class="footer">
+  <div class="footer-inner">
+    <p>Listings from <a href="https://www.adzuna.com" target="_blank" rel="noopener">Adzuna</a>. Not affiliated.</p>
+  </div>
+</footer>
+
+<template id="job-card-template">
+  <article class="job-card">
+    <div class="job-card-header">
+      <div class="job-logo"></div>
+      <div class="job-card-headline">
+        <h2 class="job-title"></h2>
+        <p class="job-company"></p>
+      </div>
+      <button class="job-save" title="Save job">
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m19 21-7-4-7 4V5a2 2 0 0 1 2-2h10a2 2 0 0 1 2 2v16z"/></svg>
+      </button>
+    </div>
+    <div class="job-info">
+      <span class="job-info-item">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 10c0 7-9 13-9 13s-9-6-9-13a9 9 0 0 1 18 0z"/><circle cx="12" cy="10" r="3"/></svg>
+        <span class="job-location"></span>
+      </span>
+      <span class="job-info-item job-salary-item">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="12" y1="1" x2="12" y2="23"/><path d="M17 5H9.5a3.5 3.5 0 0 0 0 7h5a3.5 3.5 0 0 1 0 7H6"/></svg>
+        <span class="job-salary"></span>
+      </span>
+    </div>
+    <p class="job-desc"></p>
+    <div class="job-tags">
+      <span class="job-tag tag-category"></span>
+      <span class="job-tag tag-contract"></span>
+    </div>
+    <div class="job-footer">
+      <span class="job-date"></span>
+      <a class="job-link" target="_blank" rel="noopener">View listing →</a>
+    </div>
+  </article>
+</template>
+
+<script src="script.js"></script>
+</body>
+</html>
