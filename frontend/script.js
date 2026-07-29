@@ -34,10 +34,16 @@ async function runSearch({ keyword, location, country }) {
   resultsEl.innerHTML = '';
   resultsHeader.hidden = true;
 
-  const params = new URLSearchParams({ keyword, location, country });
-
   try {
-    const res = await fetch(`/api/jobs?${params.toString()}`);
+    const res = await fetch('/api/jobs', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        job_title: keyword,
+        country,
+        location,
+      }),
+    });
     if (!res.ok) throw new Error(`Server responded with ${res.status}`);
     const data = await res.json();
 
