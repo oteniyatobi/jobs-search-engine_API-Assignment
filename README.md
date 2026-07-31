@@ -93,8 +93,8 @@ The `nohup ... &` combination keeps the server running after you disconnect from
 
 ```
 upstream jobs_backend {
-    server 10.0.0.10:8000;
-    server 10.0.0.11:8000;
+  server 100.53.101.68:8000;
+  server 3.83.68.251:8000;
 }
 
 server {
