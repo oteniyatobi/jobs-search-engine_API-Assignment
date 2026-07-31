@@ -1,5 +1,3 @@
-// Jobs. — Frontend flow controller
-
 const state = {
   view: 'start',
   jobTitle: '',
@@ -10,8 +8,6 @@ const state = {
   answers: [],
   results: null,
 };
-
-// Element lookups (all resolved once at load)
 const el = {
   views: {
     start: document.getElementById('start-view'),
@@ -20,6 +16,7 @@ const el = {
     results: document.getElementById('results-view'),
   },
   startForm: document.getElementById('start-form'),
+  startBtn: document.querySelector('#start-form button[type="submit"]'),
   jobTitleInput: document.getElementById('job-title'),
   countryInput: document.getElementById('country'),
   locationInput: document.getElementById('location'),
@@ -54,8 +51,6 @@ const el = {
 
 const logoColors = ['#B84420', '#4A7A3B', '#C79A2A', '#6B4A9C', '#2F7E7A', '#8A3A5C'];
 
-// View switching
-
 function showView(name) {
   state.view = name;
   Object.entries(el.views).forEach(([key, section]) => {
@@ -74,15 +69,14 @@ function clearError() {
   el.errorStrip.hidden = true;
 }
 
-// CV file upload → parse and fill textarea
-
-
 el.cvFileInput.addEventListener('change', async (e) => {
   const file = e.target.files[0];
   if (!file) return;
 
   el.uploadStatus.textContent = `Parsing ${file.name}...`;
   el.uploadStatus.className = 'upload-status';
+  el.startBtn.disabled = true;
+  el.startBtn.textContent = 'Parsing your CV...';
 
   try {
     const res = await fetch('/api/parse-cv', {
@@ -101,10 +95,11 @@ el.cvFileInput.addEventListener('change', async (e) => {
   } catch (err) {
     el.uploadStatus.textContent = `Could not parse: ${err.message}`;
     el.uploadStatus.className = 'upload-status error';
+  } finally {
+    el.startBtn.disabled = false;
+    el.startBtn.textContent = 'Start the test';
   }
 });
-
-// Start view → generate questions
 
 el.startForm.addEventListener('submit', async (e) => {
   e.preventDefault();
@@ -143,9 +138,6 @@ el.startForm.addEventListener('submit', async (e) => {
   }
 });
 
-// Questionnaire flow
-
-
 function renderCurrentQuestion() {
   const q = state.questions[state.currentIndex];
   const total = state.questions.length;
@@ -169,7 +161,6 @@ function renderCurrentQuestion() {
 }
 
 async function handleOptionPicked(chosenOption, btn) {
-  // Visual feedback
   el.optionsEl.querySelectorAll('.option').forEach(b => b.classList.remove('selected'));
   btn.classList.add('selected');
 
@@ -178,8 +169,6 @@ async function handleOptionPicked(chosenOption, btn) {
     question: q.text,
     chosen_option: chosenOption,
   });
-
-  // Small delay so the click registers visually.
   setTimeout(async () => {
     if (state.currentIndex + 1 < state.questions.length) {
       state.currentIndex += 1;
@@ -203,9 +192,6 @@ function resetToStart() {
   el.cvTextInput.value = '';
   showView('start');
 }
-
-// Score and load results
-
 
 async function submitAnswers() {
   showView('loading');
@@ -236,21 +222,15 @@ async function submitAnswers() {
   }
 }
 
-// Results rendering
-
 function renderResults() {
   const q = state.results.qualification || {};
   const jobs = state.results.jobs || [];
   const metrics = state.results.metrics || {};
-
-  // Qualification card
   el.scoreNumber.textContent = q.overall_score ?? '—';
   el.qualLevel.textContent = q.level || '';
   fillList(el.strengthsList, q.strengths || []);
   fillList(el.gapsList, q.gaps || []);
   el.qualFeedback.textContent = q.feedback || '';
-
-  // CV advice card (only if Groq returned advice)
   const cvAdvice = q.cv_advice || [];
   if (cvAdvice.length > 0) {
     fillList(el.cvList, cvAdvice);
@@ -258,17 +238,11 @@ function renderResults() {
   } else {
     el.cvCard.hidden = true;
   }
-
-  // Jobs count
   el.jobsCount.textContent = jobs.length === 0
     ? 'No listings matched.'
     : `${jobs.length} listing${jobs.length === 1 ? '' : 's'} ranked by fit.`;
-
-  // Jobs
   el.resultsList.innerHTML = '';
   jobs.forEach(j => el.resultsList.appendChild(buildJobCard(j)));
-
-  // Metrics
   renderMetrics(metrics, jobs.length);
 }
 
@@ -290,15 +264,11 @@ function buildJobCard(job) {
   card.querySelector('.job-location').textContent = job.location || 'Location not listed';
   card.querySelector('.job-desc').textContent = job.description || '';
   card.querySelector('.job-date').textContent = job.created ? formatDate(job.created) : '';
-
-  // Logo (colored circle with company initial)
   const initial = company.trim().charAt(0).toUpperCase() || '·';
   const colorIdx = Math.abs(hashCode(company)) % logoColors.length;
   const logoEl = card.querySelector('.job-logo');
   logoEl.textContent = initial;
   logoEl.style.background = logoColors[colorIdx];
-
-  // Salary
   const salaryEl = card.querySelector('.job-salary');
   if (job.salary_min || job.salary_max) {
     const min = job.salary_min ? Math.round(job.salary_min).toLocaleString() : null;
@@ -307,8 +277,6 @@ function buildJobCard(job) {
   }
   const sepEl = card.querySelector('.job-meta-sep');
   if (!salaryEl.textContent) sepEl.textContent = '';
-
-  // Match badge
   const badge = card.querySelector('.match-badge');
   const score = job.match_score ?? 0;
   if (score >= 70) {
@@ -321,8 +289,6 @@ function buildJobCard(job) {
     badge.classList.add('match-weak');
     badge.textContent = `${score}% match`;
   }
-
-  // Matched skills as tags
   const skillsEl = card.querySelector('.job-skills');
   (job.matched_skills || []).forEach(skill => {
     const tag = document.createElement('span');
@@ -330,8 +296,6 @@ function buildJobCard(job) {
     tag.textContent = skill;
     skillsEl.appendChild(tag);
   });
-
-  // Link
   const linkEl = card.querySelector('.job-link');
   linkEl.href = job.url || '#';
 
@@ -381,8 +345,6 @@ function renderMetrics(metrics, jobsCount) {
     el.metricsGrid.appendChild(div);
   });
 }
-
-// Helpers
 
 function hashCode(str) {
   let hash = 0;
