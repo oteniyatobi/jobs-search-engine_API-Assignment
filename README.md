@@ -6,7 +6,7 @@ Built as a summative project for the **Playing Around with APIs** module at Afri
 
 ## Live demo
 
-- Deployed at: **[thetobi.tech](https://thetobi.tech)** (or your chosen subdomain)
+- Deployed at: **[api.thetobi.tech](https://api.thetobi.tech)** 
 - Demo video (under 2 minutes): **[link to YouTube or Loom]**
 - Repository: **[github.com/oteniyatobi/jobs-search-engine_API-Assignment](https://github.com/oteniyatobi/jobs-search-engine_API-Assignment)**
 
