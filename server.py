@@ -1,13 +1,14 @@
 #!/usr/bin/env python3
-
 import http.server
 import json
 import mimetypes
 import os
+import re
 import sys
 import urllib.error
 import urllib.parse
 import urllib.request
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 ROOT_DIR = Path(__file__).parent.resolve()
@@ -15,15 +16,19 @@ FRONTEND_DIR = ROOT_DIR / "frontend"
 ENV_FILE = ROOT_DIR / ".env"
 PORT = 8000
 
-GEMINI_URL = (
-    "https://generativelanguage.googleapis.com/v1beta/"
-    "models/gemini-2.0-flash:generateContent"
+GROQ_URL = "https://api.groq.com/openai/v1/chat/completions"
+GROQ_MODEL = "llama-3.3-70b-versatile"
+GROQ_USER_AGENT = (
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+    "(KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
 )
 
 ADZUNA_BASE = "https://api.adzuna.com/v1/api/jobs"
 
+STRONG_MATCH_THRESHOLD = 70  # any match score at or above this is a "strong" match
 
-# .env loader 
+
+# ---- .env loader ----
 
 def load_env_file(path):
     if not path.exists():
@@ -39,9 +44,36 @@ def load_env_file(path):
             os.environ[key] = value
 
 
-# Gemini call 
+# Groq calls 
 
-def gemini_generate_questions(job_title, api_key):
+def _groq_chat(prompt, api_key):
+    """POST a prompt to Groq's chat completions and return the text content."""
+    payload = {
+        "model": GROQ_MODEL,
+        "messages": [{"role": "user", "content": prompt}],
+        "temperature": 0.4,
+        "response_format": {"type": "json_object"},
+    }
+
+    body = json.dumps(payload).encode("utf-8")
+    req = urllib.request.Request(
+        GROQ_URL,
+        data=body,
+        method="POST",
+        headers={
+            "Content-Type": "application/json",
+            "Authorization": f"Bearer {api_key}",
+            "User-Agent": GROQ_USER_AGENT,
+        },
+    )
+
+    with urllib.request.urlopen(req, timeout=45) as resp:
+        data = json.loads(resp.read().decode("utf-8"))
+
+    return data["choices"][0]["message"]["content"]
+
+
+def groq_generate_questions(job_title, api_key):
     prompt = (
         f"You are a technical recruiter. Generate exactly 5 multiple choice "
         f"questions to assess a candidate for a '{job_title}' role. "
@@ -52,33 +84,34 @@ def gemini_generate_questions(job_title, api_key):
         f'{{"questions": [{{"id": 1, "text": "...", '
         f'"options": ["...", "...", "...", "..."]}}, ...]}}'
     )
-
-    payload = {
-        "contents": [{"parts": [{"text": prompt}]}],
-        "generationConfig": {
-            "temperature": 0.4,
-            "responseMimeType": "application/json",
-        },
-    }
-
-    url = f"{GEMINI_URL}?key={api_key}"
-    body = json.dumps(payload).encode("utf-8")
-    req = urllib.request.Request(
-        url,
-        data=body,
-        method="POST",
-        headers={"Content-Type": "application/json"},
-    )
-
-    with urllib.request.urlopen(req, timeout=30) as resp:
-        data = json.loads(resp.read().decode("utf-8"))
-
-    text = data["candidates"][0]["content"]["parts"][0]["text"]
+    text = _groq_chat(prompt, api_key)
     parsed = json.loads(text)
     return parsed.get("questions", [])
 
 
-#  Adzuna call 
+def groq_score_answers(job_title, answers, api_key):
+    formatted = "\n".join(
+        f"Q{i + 1}: {a.get('question', '')}\n   Chose: {a.get('chosen_option', '')}"
+        for i, a in enumerate(answers)
+    )
+    prompt = (
+        f"You are a technical recruiter. A candidate applied for a '{job_title}' role "
+        f"and answered a 5-question skill assessment. Based on the answers below, "
+        f"give a qualification assessment.\n\n"
+        f"{formatted}\n\n"
+        f"Return valid JSON only, no prose, matching this schema exactly:\n"
+        f'{{"overall_score": <integer 0-100>, '
+        f'"level": "<short label like Junior, Mid-Level, Senior with a qualifier>", '
+        f'"strengths": ["<strength 1>", "<strength 2>", "<strength 3>"], '
+        f'"gaps": ["<gap 1>", "<gap 2>", "<gap 3>"], '
+        f'"feedback": "<one paragraph, 2-3 sentences>", '
+        f'"key_skills": ["<skill 1>", "<skill 2>", "<skill 3>", "<skill 4>", "<skill 5>"]}}'
+    )
+    text = _groq_chat(prompt, api_key)
+    return json.loads(text)
+
+
+# Adzuna call 
 
 def adzuna_search(job_title, country, location, app_id, app_key):
     country = (country or "gb").lower()
@@ -120,6 +153,93 @@ def adzuna_search(job_title, country, location, app_id, app_key):
     return jobs
 
 
+#  Match scoring
+
+_WORD_RE = re.compile(r"[a-z0-9\+\#\.]+")
+
+
+def _tokenize(text):
+    if not text:
+        return set()
+    return set(_WORD_RE.findall(text.lower()))
+
+
+def _skill_hit(skill, title_tokens, desc_tokens):
+    """Return (matched, weight). Weight 2 for title hit, 1 for description."""
+    skill_tokens = _tokenize(skill)
+    if not skill_tokens:
+        return False, 0
+    if skill_tokens & title_tokens:
+        return True, 2
+    if skill_tokens & desc_tokens:
+        return True, 1
+    return False, 0
+
+
+def score_job_against_skills(job, key_skills):
+    """Add match_score (0-100) and matched_skills to a job dict."""
+    title_tokens = _tokenize(job.get("title", ""))
+    desc_tokens = _tokenize(job.get("description", ""))
+
+    total_weight = 0
+    max_weight = len(key_skills) * 2
+    matched = []
+    for skill in key_skills:
+        hit, weight = _skill_hit(skill, title_tokens, desc_tokens)
+        if hit:
+            matched.append(skill)
+            total_weight += weight
+
+    match_score = int(round((total_weight / max_weight) * 100)) if max_weight else 0
+    return {**job, "match_score": match_score, "matched_skills": matched}
+
+
+def compute_metrics(scored_jobs, gaps):
+    """Roll up the dashboard-level metrics for the results page."""
+    total = len(scored_jobs)
+    strong = [j for j in scored_jobs if j["match_score"] >= STRONG_MATCH_THRESHOLD]
+    strong_count = len(strong)
+
+    # Average salary among strong matches (midpoint when both bounds exist).
+    salaries = []
+    for j in strong:
+        lo, hi = j.get("salary_min"), j.get("salary_max")
+        if lo and hi:
+            salaries.append((lo + hi) / 2)
+        elif lo:
+            salaries.append(lo)
+        elif hi:
+            salaries.append(hi)
+    avg_salary = int(round(sum(salaries) / len(salaries))) if salaries else None
+
+    # Which gap, if closed, would unlock the most extra strong matches.
+    top_gap_impact = None
+    if gaps and scored_jobs:
+        best = {"gap": None, "unlocks": 0}
+        for gap in gaps:
+            unlocks = 0
+            for j in scored_jobs:
+                if j["match_score"] >= STRONG_MATCH_THRESHOLD:
+                    continue
+                title_tokens = _tokenize(j.get("title", ""))
+                desc_tokens = _tokenize(j.get("description", ""))
+                _, w = _skill_hit(gap, title_tokens, desc_tokens)
+                # Simulate closing this gap by bumping the score by weight * 15.
+                if j["match_score"] + (w * 15) >= STRONG_MATCH_THRESHOLD:
+                    unlocks += 1
+            if unlocks > best["unlocks"]:
+                best = {"gap": gap, "unlocks": unlocks}
+        if best["gap"]:
+            top_gap_impact = best
+
+    return {
+        "total_jobs": total,
+        "strong_matches": strong_count,
+        "avg_salary_top_matches": avg_salary,
+        "top_gap_impact": top_gap_impact,
+    }
+
+
 # Request handler 
 
 class Handler(http.server.BaseHTTPRequestHandler):
@@ -143,16 +263,16 @@ class Handler(http.server.BaseHTTPRequestHandler):
             self._handle_generate_test()
         elif self.path == "/api/jobs":
             self._handle_jobs()
+        elif self.path == "/api/score":
+            self._handle_score()
         else:
             self._send_404()
 
+    # individual endpoint handlers 
+
     def _handle_generate_test(self):
-        try:
-            length = int(self.headers.get("Content-Length", 0) or 0)
-            raw = self.rfile.read(length).decode("utf-8") if length > 0 else "{}"
-            body = json.loads(raw)
-        except json.JSONDecodeError:
-            self._send_json(400, {"error": "Invalid JSON in request body."})
+        body = self._read_json_body()
+        if body is None:
             return
 
         job_title = (body.get("job_title") or "").strip()
@@ -161,25 +281,21 @@ class Handler(http.server.BaseHTTPRequestHandler):
             return
 
         try:
-            questions = gemini_generate_questions(
-                job_title, os.environ["GEMINI_API_KEY"]
+            questions = groq_generate_questions(
+                job_title, os.environ["GROQ_API_KEY"]
             )
             self._send_json(200, {"questions": questions})
         except urllib.error.HTTPError as e:
-            self._send_json(502, {"error": f"Gemini API returned {e.code}."})
+            self._send_error(e, "Groq")
         except urllib.error.URLError as e:
-            self._send_json(502, {"error": f"Could not reach Gemini: {e.reason}."})
+            self._send_json(502, {"error": f"Could not reach Groq: {e.reason}."})
         except Exception as e:
             print(f"Unexpected error in /api/generate-test: {type(e).__name__}: {e}")
             self._send_json(500, {"error": "Server error."})
 
     def _handle_jobs(self):
-        try:
-            length = int(self.headers.get("Content-Length", 0) or 0)
-            raw = self.rfile.read(length).decode("utf-8") if length > 0 else "{}"
-            body = json.loads(raw)
-        except json.JSONDecodeError:
-            self._send_json(400, {"error": "Invalid JSON in request body."})
+        body = self._read_json_body()
+        if body is None:
             return
 
         job_title = (body.get("job_title") or "").strip()
@@ -192,20 +308,104 @@ class Handler(http.server.BaseHTTPRequestHandler):
 
         try:
             jobs = adzuna_search(
-                job_title,
-                country,
-                location,
-                os.environ["ADZUNA_APP_ID"],
-                os.environ["ADZUNA_APP_KEY"],
+                job_title, country, location,
+                os.environ["ADZUNA_APP_ID"], os.environ["ADZUNA_APP_KEY"],
             )
             self._send_json(200, {"jobs": jobs})
         except urllib.error.HTTPError as e:
-            self._send_json(502, {"error": f"Adzuna API returned {e.code}."})
+            self._send_error(e, "Adzuna")
         except urllib.error.URLError as e:
             self._send_json(502, {"error": f"Could not reach Adzuna: {e.reason}."})
         except Exception as e:
             print(f"Unexpected error in /api/jobs: {type(e).__name__}: {e}")
             self._send_json(500, {"error": "Server error."})
+
+    def _handle_score(self):
+        body = self._read_json_body()
+        if body is None:
+            return
+
+        job_title = (body.get("job_title") or "").strip()
+        country = (body.get("country") or "gb").strip()
+        location = (body.get("location") or "").strip()
+        answers = body.get("answers") or []
+
+        if not job_title:
+            self._send_json(400, {"error": "job_title is required."})
+            return
+        if not isinstance(answers, list) or len(answers) == 0:
+            self._send_json(400, {"error": "answers must be a non-empty list."})
+            return
+
+        groq_key = os.environ["GROQ_API_KEY"]
+        adzuna_id = os.environ["ADZUNA_APP_ID"]
+        adzuna_key = os.environ["ADZUNA_APP_KEY"]
+
+        # Fire both upstream calls in parallel.
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            fut_score = pool.submit(
+                groq_score_answers, job_title, answers, groq_key
+            )
+            fut_jobs = pool.submit(
+                adzuna_search, job_title, country, location, adzuna_id, adzuna_key
+            )
+
+            # The qualification card is required. If Adzuna fails we still
+            # return the score so the user sees their result.
+            try:
+                qualification = fut_score.result()
+            except urllib.error.HTTPError as e:
+                self._send_error(e, "Groq")
+                return
+            except urllib.error.URLError as e:
+                self._send_json(502, {"error": f"Could not reach Groq: {e.reason}."})
+                return
+            except Exception as e:
+                print(f"Groq scoring error: {type(e).__name__}: {e}")
+                self._send_json(502, {"error": "Groq scoring failed."})
+                return
+
+            try:
+                jobs = fut_jobs.result()
+            except Exception as e:
+                print(f"Adzuna failed (continuing without jobs): {e}")
+                jobs = []
+
+        key_skills = qualification.get("key_skills", []) or []
+        scored = [score_job_against_skills(j, key_skills) for j in jobs]
+        scored.sort(key=lambda j: j["match_score"], reverse=True)
+
+        metrics = compute_metrics(scored, qualification.get("gaps", []) or [])
+
+        self._send_json(200, {
+            "qualification": qualification,
+            "jobs": scored,
+            "metrics": metrics,
+        })
+
+    # shared helpers 
+
+    def _read_json_body(self):
+        """Return parsed JSON body, or None (and send 400) on bad input."""
+        try:
+            length = int(self.headers.get("Content-Length", 0) or 0)
+            raw = self.rfile.read(length).decode("utf-8") if length > 0 else "{}"
+            return json.loads(raw)
+        except json.JSONDecodeError:
+            self._send_json(400, {"error": "Invalid JSON in request body."})
+            return None
+
+    def _send_error(self, http_error, source):
+        """Send a JSON error including the upstream response body."""
+        error_body = ""
+        try:
+            error_body = http_error.read().decode("utf-8", errors="replace")
+        except Exception:
+            pass
+        print(f"{source} HTTPError {http_error.code}: {error_body}")
+        self._send_json(502, {
+            "error": f"{source} API returned {http_error.code}: {error_body[:300]}"
+        })
 
     def _send_file(self, path):
         if not path.exists() or not path.is_file():
@@ -238,12 +438,12 @@ class Handler(http.server.BaseHTTPRequestHandler):
         self.wfile.write(body)
 
 
-# Startup 
+# ---- Startup --
 
 if __name__ == "__main__":
     load_env_file(ENV_FILE)
 
-    required = ["GEMINI_API_KEY", "ADZUNA_APP_ID", "ADZUNA_APP_KEY"]
+    required = ["GROQ_API_KEY", "ADZUNA_APP_ID", "ADZUNA_APP_KEY"]
     missing = [k for k in required if not os.environ.get(k, "").strip()]
     if missing:
         sys.stderr.write(
