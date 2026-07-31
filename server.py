@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+
 import http.server
 import json
 import mimetypes
@@ -25,10 +26,12 @@ GROQ_USER_AGENT = (
 
 ADZUNA_BASE = "https://api.adzuna.com/v1/api/jobs"
 
+APILAYER_URL = "https://api.apilayer.com/resume_parser/upload"
+
 STRONG_MATCH_THRESHOLD = 70  # any match score at or above this is a "strong" match
 
 
-# ---- .env loader ----
+#  .env loader
 
 def load_env_file(path):
     if not path.exists():
@@ -44,8 +47,7 @@ def load_env_file(path):
             os.environ[key] = value
 
 
-# Groq calls 
-
+#  Groq calls
 def _groq_chat(prompt, api_key):
     """POST a prompt to Groq's chat completions and return the text content."""
     payload = {
@@ -73,13 +75,22 @@ def _groq_chat(prompt, api_key):
     return data["choices"][0]["message"]["content"]
 
 
-def groq_generate_questions(job_title, api_key):
+def groq_generate_questions(job_title, cv_text, api_key):
+    cv_block = ""
+    if cv_text:
+        cv_block = (
+            f"\nThe candidate has provided their CV below. Tailor the "
+            f"questions to their real experience, not just generic ones.\n\n"
+            f"--- CV START ---\n{cv_text.strip()[:4000]}\n--- CV END ---\n"
+        )
+
     prompt = (
         f"You are a technical recruiter. Generate exactly 5 multiple choice "
         f"questions to assess a candidate for a '{job_title}' role. "
         f"Cover experience level, technical skills, project history, and work "
         f"preferences. Each question must have exactly 4 options that let the "
-        f"candidate self-rate their experience or skill level.\n\n"
+        f"candidate self-rate their experience or skill level."
+        f"{cv_block}\n\n"
         f"Return valid JSON only, no prose, matching this schema exactly:\n"
         f'{{"questions": [{{"id": 1, "text": "...", '
         f'"options": ["...", "...", "...", "..."]}}, ...]}}'
@@ -89,22 +100,36 @@ def groq_generate_questions(job_title, api_key):
     return parsed.get("questions", [])
 
 
-def groq_score_answers(job_title, answers, api_key):
+def groq_score_answers(job_title, answers, cv_text, api_key):
     formatted = "\n".join(
         f"Q{i + 1}: {a.get('question', '')}\n   Chose: {a.get('chosen_option', '')}"
         for i, a in enumerate(answers)
     )
+    cv_block = ""
+    if cv_text:
+        cv_block = (
+            f"\nCandidate's CV for additional context:\n"
+            f"--- CV START ---\n{cv_text.strip()[:4000]}\n--- CV END ---\n"
+        )
+
+    cv_advice_field = (
+        '"cv_advice": ["<concrete CV suggestion 1>", "<concrete CV suggestion 2>", '
+        '"<concrete CV suggestion 3>"], '
+    ) if cv_text else ""
+
     prompt = (
         f"You are a technical recruiter. A candidate applied for a '{job_title}' role "
-        f"and answered a 5-question skill assessment. Based on the answers below, "
-        f"give a qualification assessment.\n\n"
-        f"{formatted}\n\n"
+        f"and answered a 5-question skill assessment. Based on the answers below"
+        f"{' and their CV' if cv_text else ''}, give a qualification assessment.\n\n"
+        f"{formatted}\n"
+        f"{cv_block}\n"
         f"Return valid JSON only, no prose, matching this schema exactly:\n"
         f'{{"overall_score": <integer 0-100>, '
         f'"level": "<short label like Junior, Mid-Level, Senior with a qualifier>", '
         f'"strengths": ["<strength 1>", "<strength 2>", "<strength 3>"], '
         f'"gaps": ["<gap 1>", "<gap 2>", "<gap 3>"], '
         f'"feedback": "<one paragraph, 2-3 sentences>", '
+        f'{cv_advice_field}'
         f'"key_skills": ["<skill 1>", "<skill 2>", "<skill 3>", "<skill 4>", "<skill 5>"]}}'
     )
     text = _groq_chat(prompt, api_key)
@@ -153,7 +178,92 @@ def adzuna_search(job_title, country, location, app_id, app_key):
     return jobs
 
 
-#  Match scoring
+# APILayer resume parser 
+
+def apilayer_parse_resume(file_bytes, api_key):
+    """Send a resume file to APILayer and return the parsed JSON."""
+    req = urllib.request.Request(
+        APILAYER_URL,
+        data=file_bytes,
+        method="POST",
+        headers={
+            "Content-Type": "application/octet-stream",
+            "apikey": api_key,
+        },
+    )
+    with urllib.request.urlopen(req, timeout=60) as resp:
+        return json.loads(resp.read().decode("utf-8"))
+
+
+def _safe_str(value):
+    """Handle APILayer fields that may come back as a string OR a list."""
+    if isinstance(value, list):
+        return str(value[0]).strip() if value else ""
+    if value is None:
+        return ""
+    return str(value).strip()
+
+
+def parsed_resume_to_text(parsed):
+    """Turn APILayer's structured resume JSON into readable text for Groq."""
+    parts = []
+
+    name = _safe_str(parsed.get("name"))
+    email = _safe_str(parsed.get("email"))
+    phone = _safe_str(parsed.get("phone"))
+    if name:
+        parts.append(f"Name: {name}")
+    if email:
+        parts.append(f"Email: {email}")
+    if phone:
+        parts.append(f"Phone: {phone}")
+
+    skills = parsed.get("skills") or []
+    if skills:
+        parts.append("\nSKILLS:")
+        for s in skills:
+            skill_name = s if isinstance(s, str) else _safe_str(s.get("name") if isinstance(s, dict) else s)
+            if skill_name:
+                parts.append(f"- {skill_name}")
+
+    experience = parsed.get("experience") or []
+    if experience:
+        parts.append("\nEXPERIENCE:")
+        for e in experience:
+            if not isinstance(e, dict):
+                continue
+            title = _safe_str(e.get("title"))
+            org = _safe_str(e.get("organization") or e.get("company"))
+            dates = _safe_str(e.get("date") or e.get("dates"))
+            line_parts = [title] if title else []
+            if org:
+                line_parts.append(f"at {org}")
+            if dates:
+                line_parts.append(f"({dates})")
+            if line_parts:
+                parts.append("- " + " ".join(line_parts))
+
+    education = parsed.get("education") or []
+    if education:
+        parts.append("\nEDUCATION:")
+        for e in education:
+            if not isinstance(e, dict):
+                continue
+            degree = _safe_str(e.get("degree"))
+            inst = _safe_str(e.get("institution") or e.get("school"))
+            dates = _safe_str(e.get("date") or e.get("dates"))
+            line_parts = [degree] if degree else []
+            if inst:
+                line_parts.append(f"at {inst}")
+            if dates:
+                line_parts.append(f"({dates})")
+            if line_parts:
+                parts.append("- " + " ".join(line_parts))
+
+    return "\n".join(parts)
+
+
+#  Match scoring 
 
 _WORD_RE = re.compile(r"[a-z0-9\+\#\.]+")
 
@@ -239,7 +349,6 @@ def compute_metrics(scored_jobs, gaps):
         "top_gap_impact": top_gap_impact,
     }
 
-
 # Request handler 
 
 class Handler(http.server.BaseHTTPRequestHandler):
@@ -265,10 +374,12 @@ class Handler(http.server.BaseHTTPRequestHandler):
             self._handle_jobs()
         elif self.path == "/api/score":
             self._handle_score()
+        elif self.path == "/api/parse-cv":
+            self._handle_parse_cv()
         else:
             self._send_404()
 
-    # individual endpoint handlers 
+    #  individual endpoint handlers 
 
     def _handle_generate_test(self):
         body = self._read_json_body()
@@ -276,13 +387,14 @@ class Handler(http.server.BaseHTTPRequestHandler):
             return
 
         job_title = (body.get("job_title") or "").strip()
+        cv_text = (body.get("cv_text") or "").strip()
         if not job_title:
             self._send_json(400, {"error": "job_title is required."})
             return
 
         try:
             questions = groq_generate_questions(
-                job_title, os.environ["GROQ_API_KEY"]
+                job_title, cv_text, os.environ["GROQ_API_KEY"]
             )
             self._send_json(200, {"questions": questions})
         except urllib.error.HTTPError as e:
@@ -329,6 +441,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
         country = (body.get("country") or "gb").strip()
         location = (body.get("location") or "").strip()
         answers = body.get("answers") or []
+        cv_text = (body.get("cv_text") or "").strip()
 
         if not job_title:
             self._send_json(400, {"error": "job_title is required."})
@@ -344,7 +457,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
         # Fire both upstream calls in parallel.
         with ThreadPoolExecutor(max_workers=2) as pool:
             fut_score = pool.submit(
-                groq_score_answers, job_title, answers, groq_key
+                groq_score_answers, job_title, answers, cv_text, groq_key
             )
             fut_jobs = pool.submit(
                 adzuna_search, job_title, country, location, adzuna_id, adzuna_key
@@ -383,7 +496,32 @@ class Handler(http.server.BaseHTTPRequestHandler):
             "metrics": metrics,
         })
 
-    # shared helpers 
+    def _handle_parse_cv(self):
+        length = int(self.headers.get("Content-Length", 0) or 0)
+        if length == 0:
+            self._send_json(400, {"error": "No file uploaded."})
+            return
+        if length > 5 * 1024 * 1024:  # 5MB cap
+            self._send_json(413, {"error": "File too large (max 5MB)."})
+            return
+
+        file_bytes = self.rfile.read(length)
+
+        try:
+            parsed = apilayer_parse_resume(
+                file_bytes, os.environ["APILAYER_API_KEY"]
+            )
+            text = parsed_resume_to_text(parsed)
+            self._send_json(200, {"text": text, "parsed": parsed})
+        except urllib.error.HTTPError as e:
+            self._send_error(e, "APILayer")
+        except urllib.error.URLError as e:
+            self._send_json(502, {"error": f"Could not reach APILayer: {e.reason}."})
+        except Exception as e:
+            print(f"Unexpected error in /api/parse-cv: {type(e).__name__}: {e}")
+            self._send_json(500, {"error": "Server error."})
+
+    # shared helpers -
 
     def _read_json_body(self):
         """Return parsed JSON body, or None (and send 400) on bad input."""
@@ -438,12 +576,12 @@ class Handler(http.server.BaseHTTPRequestHandler):
         self.wfile.write(body)
 
 
-# ---- Startup --
+#  Startup 
 
 if __name__ == "__main__":
     load_env_file(ENV_FILE)
 
-    required = ["GROQ_API_KEY", "ADZUNA_APP_ID", "ADZUNA_APP_KEY"]
+    required = ["GROQ_API_KEY", "ADZUNA_APP_ID", "ADZUNA_APP_KEY", "APILAYER_API_KEY"]
     missing = [k for k in required if not os.environ.get(k, "").strip()]
     if missing:
         sys.stderr.write(
